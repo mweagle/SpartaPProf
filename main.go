@@ -1,17 +1,16 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
+	"context"
 	"os"
 	"runtime"
 	"sync"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	sparta "github.com/mweagle/Sparta"
 	spartaCF "github.com/mweagle/Sparta/aws/cloudformation"
 	gocf "github.com/mweagle/go-cloudformation"
+	"github.com/sirupsen/logrus"
 )
 
 func emptySelect() {
@@ -49,13 +48,13 @@ func leakyFunction() {
 }
 
 // Standard Sparta lambda function
-func helloWorld(w http.ResponseWriter, r *http.Request) {
+func helloWorld(ctx context.Context) (string, error) {
 	go leakyFunction()
 	var once sync.Once
 	once.Do(func() {
 		go emptySelect()
 	})
-	fmt.Fprintf(w, "Hi there 🌍")
+	return "Hi there 🌍", nil
 }
 
 func main() {
@@ -66,7 +65,9 @@ func main() {
 	// to generate sample load. The lambda function will publish profile snapshots
 	// to an S3 location which can then be interrogated locally by re-running
 	// this application with the `profile` option
-	sparta.ScheduleProfileLoop(nil, 5*time.Second, 30*time.Second,
+	sparta.ScheduleProfileLoop(nil,
+		5*time.Second,
+		30*time.Second,
 		"goroutine",
 		"heap",
 		"threadcreate",
@@ -74,11 +75,12 @@ func main() {
 		"mutex")
 
 	lambdaFn := sparta.HandleAWSLambda("Hello World",
-		http.HandlerFunc(helloWorld),
+		helloWorld,
 		sparta.IAMRoleDefinition{})
 	lambdaFn.Options.Timeout = 60
 	lambdaFn.Options.MemorySize = 256
-	lambdaFn.Decorator = func(serviceName string,
+
+	arnDecorator := func(serviceName string,
 		lambdaResourceName string,
 		lambdaResource gocf.LambdaFunction,
 		resourceMetadata map[string]interface{},
@@ -96,6 +98,10 @@ func main() {
 		}
 		return nil
 	}
+
+	lambdaFn.Decorators = append(lambdaFn.Decorators,
+		sparta.TemplateDecoratorHookFunc(arnDecorator))
+
 	// Sanitize the name so that it doesn't have any spaces
 	//stackName := spartaCF.UserScopedStackName("SpartaHello")
 	var lambdaFunctions []*sparta.LambdaAWSInfo
