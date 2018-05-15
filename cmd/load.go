@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/lambda"
 )
 
-const totalRequests = 60
+const totalRequests = 180
 
 func main() {
 	sess := session.Must(session.NewSession())

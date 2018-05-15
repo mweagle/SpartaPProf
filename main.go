@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math/rand"
 	"os"
 	"runtime"
 	"sync"
@@ -9,9 +10,14 @@ import (
 
 	sparta "github.com/mweagle/Sparta"
 	spartaCF "github.com/mweagle/Sparta/aws/cloudformation"
+	pprofImpl "github.com/mweagle/SpartaPProf/pprof"
 	gocf "github.com/mweagle/go-cloudformation"
 	"github.com/sirupsen/logrus"
 )
+
+//----------------------------------------------------------------------------//
+// Throwaway functions to generate load
+//
 
 func emptySelect() {
 	n := runtime.NumCPU()
@@ -39,47 +45,50 @@ func emptySelect() {
 // Adapted from https://jvns.ca/blog/2017/09/24/profiling-go-with-pprof/
 func leakyFunction() {
 	s := make([]string, 3)
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 128; i++ {
 		s = append(s, "magical pandas")
-		if (i % 100) == 0 {
+		if (i % 32) == 0 {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
 }
 
-// Standard Sparta lambda function
-func helloWorld(ctx context.Context) (string, error) {
-	go leakyFunction()
+func artificialLoad() {
 	var once sync.Once
 	once.Do(func() {
 		go emptySelect()
 	})
+	go leakyFunction()
+	load()
+}
+
+func load() {
+	for i := 0; i < (1 << 7); i++ {
+		rand.Int63()
+	}
+}
+
+//----------------------------------------------------------------------------//
+
+// Standard Sparta lambda function
+func helloWorld(ctx context.Context) (string, error) {
+	artificialLoad()
 	return "Hi there 🌍", nil
 }
 
-func main() {
-	// Install the profiling hook. During `provision`, this will annotate
-	// each lambda function with enough context to publish profile snapshots
-	// Once the stack is deployed, use the /cmd/load.go file as in:
-	// go run load.go ARN_TO_DEPLOYED_FUNCTION
-	// to generate sample load. The lambda function will publish profile snapshots
-	// to an S3 location which can then be interrogated locally by re-running
-	// this application with the `profile` option
-	sparta.ScheduleProfileLoop(nil,
-		5*time.Second,
-		30*time.Second,
-		"goroutine",
-		"heap",
-		"threadcreate",
-		"block",
-		"mutex")
+//----------------------------------------------------------------------------//
 
+func main() {
 	lambdaFn := sparta.HandleAWSLambda("Hello World",
 		helloWorld,
 		sparta.IAMRoleDefinition{})
 	lambdaFn.Options.Timeout = 60
 	lambdaFn.Options.MemorySize = 256
 
+	// How to get the build id inside the lambda function?
+	lambdaFn.Options.Environment = map[string]*gocf.StringExpr{
+		"GODEBUG": gocf.String("http2debug=2"),
+	}
 	arnDecorator := func(serviceName string,
 		lambdaResourceName string,
 		lambdaResource gocf.LambdaFunction,
@@ -107,11 +116,15 @@ func main() {
 	var lambdaFunctions []*sparta.LambdaAWSInfo
 	lambdaFunctions = append(lambdaFunctions, lambdaFn)
 	pprofStackName := spartaCF.UserScopedStackName("SpartaPProf")
-	err := sparta.Main(pprofStackName,
+	workflowHooks := pprofImpl.WorkflowHooks()
+
+	err := sparta.MainEx(pprofStackName,
 		"Sparta application that demonstrates sparta.ScheduleProfileLoop usage",
 		lambdaFunctions,
 		nil,
-		nil)
+		nil,
+		workflowHooks,
+		false)
 	if err != nil {
 		os.Exit(1)
 	}
