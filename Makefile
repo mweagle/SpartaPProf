@@ -1,17 +1,17 @@
 .PHONY: googlePProf
 
+
+explore:
+		go run main.go explore --level info
+
 spartaPProf:
-	GCLOUD_KEYS_PATH=$(GOPATH)/src/github.com/mweagle/SpartaPProf/pprof/gcloud-spartapprof-keys.json \
-		go run main.go provision --s3Bucket weagle --level info
+		go run main.go provision --s3Bucket $(S3_BUCKET) --level info
 
 describeSpartaPProf:
-	GCLOUD_KEYS_PATH=$(GOPATH)/src/github.com/mweagle/SpartaPProf/pprof/gcloud-spartapprof-keys.json \
-		go run main.go describe --s3Bucket weagle --out ./google-pprof.html --level info
+		go run main.go describe --s3Bucket $(S3_BUCKET) --out ./google-pprof.html --level info
 
 googlePProf:
-	GCLOUD_KEYS_PATH=$(GOPATH)/src/github.com/mweagle/SpartaPProf/pprof/gcloud-spartapprof-keys.json \
-		go run --tags googlepprof main.go provision --s3Bucket weagle --tags googlepprof --level info
+		go run --tags googlepprof main.go provision --s3Bucket $(S3_BUCKET) --tags googlepprof --level info
 
 describeGooglePProf:
-	GCLOUD_KEYS_PATH=$(GOPATH)/src/github.com/mweagle/SpartaPProf/pprof/gcloud-spartapprof-keys.json \
-		go run --tags googlepprof main.go describe --s3Bucket weagle --tags googlepprof --out ./google-pprof.html --level info
+		go run --tags googlepprof main.go describe --s3Bucket $(S3_BUCKET) --tags googlepprof --out ./google-pprof.html --level info
