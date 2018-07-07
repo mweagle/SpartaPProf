@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"os"
 	"runtime"
@@ -10,10 +11,18 @@ import (
 
 	sparta "github.com/mweagle/Sparta"
 	spartaCF "github.com/mweagle/Sparta/aws/cloudformation"
+	iamBuilder "github.com/mweagle/Sparta/aws/iam/builder"
 	pprofImpl "github.com/mweagle/SpartaPProf/pprof"
 	gocf "github.com/mweagle/go-cloudformation"
+	"github.com/mweagle/ssm-cache"
 	"github.com/sirupsen/logrus"
 )
+
+var cacheClient ssmcache.Client
+
+func init() {
+	cacheClient = ssmcache.NewClient(5 * time.Minute)
+}
 
 //----------------------------------------------------------------------------//
 // Throwaway functions to generate load
@@ -73,7 +82,8 @@ func load() {
 // Standard Sparta lambda function
 func helloWorld(ctx context.Context) (string, error) {
 	artificialLoad()
-	return "Hi there 🌍", nil
+	expString, _ := cacheClient.GetExpiringString("RotatingString", 30*time.Second)
+	return fmt.Sprintf("Hi there: %s 🌍", expString), nil
 }
 
 //----------------------------------------------------------------------------//
@@ -85,10 +95,22 @@ func main() {
 	lambdaFn.Options.Timeout = 60
 	lambdaFn.Options.MemorySize = 256
 
-	// How to get the build id inside the lambda function?
-	lambdaFn.Options.Environment = map[string]*gocf.StringExpr{
-		"GODEBUG": gocf.String("http2debug=2"),
-	}
+	// Enable the lambda function to access the Parameter Store
+	lambdaFn.RoleDefinition.Privileges = append(lambdaFn.RoleDefinition.Privileges,
+		iamBuilder.Allow("ssm:GetParameter", "ssm:GetParametersByPath").
+			ForResource().
+			Literal("arn:aws:ssm:").
+			Region(":").
+			AccountID(":").
+			Literal("*").
+			ToPrivilege())
+
+	// Need to debug the gRPC connection? Set an env var
+	// according to https://golang.org/pkg/net/http/
+	// lambdaFn.Options.Environment = map[string]*gocf.StringExpr{
+	// 	"GODEBUG": gocf.String("http2debug=2"),
+	// }
+
 	arnDecorator := func(serviceName string,
 		lambdaResourceName string,
 		lambdaResource gocf.LambdaFunction,
@@ -116,15 +138,22 @@ func main() {
 	var lambdaFunctions []*sparta.LambdaAWSInfo
 	lambdaFunctions = append(lambdaFunctions, lambdaFn)
 	pprofStackName := spartaCF.UserScopedStackName("SpartaPProf")
-	workflowHooks := pprofImpl.WorkflowHooks()
 
-	err := sparta.MainEx(pprofStackName,
-		"Sparta application that demonstrates sparta.ScheduleProfileLoop usage",
+	// Initialize the profiler
+	if sparta.IsExecutingInLambda() {
+		initLogger, initLoggerErr := sparta.NewLogger("info")
+		if initLoggerErr != nil {
+			panic("Failed to initialize logger: " + initLoggerErr.Error())
+		}
+		pprofImpl.InitializeProfiler(cacheClient, initLogger)
+	}
+
+	// Startup
+	err := sparta.Main(pprofStackName,
+		"Sparta application that demonstrates how to profile in AWS Lambda",
 		lambdaFunctions,
 		nil,
-		nil,
-		workflowHooks,
-		false)
+		nil)
 	if err != nil {
 		os.Exit(1)
 	}

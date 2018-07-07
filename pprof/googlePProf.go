@@ -3,84 +3,59 @@
 package pprof
 
 import (
-	"archive/zip"
-	"bytes"
-	"fmt"
-	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 
+	"strings"
+
 	"cloud.google.com/go/profiler"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/mweagle/Sparta"
-	"github.com/pkg/errors"
+	"github.com/mweagle/ssm-cache"
 	"github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
 )
 
-const (
-	gcloudPrivateKeyFilename = "gcloud-keys.json"
-)
+// InitializeProfiler sets up the profiler
+func InitializeProfiler(cacheClient ssmcache.Client, logger *logrus.Logger) {
+	logger.Info("Initializing Google profiler from SSM keys")
 
-func init() {
-	// Set the env var to the location of the JSON file and then setup the
-	// profiler...
-	if os.Getenv("LAMBDA_TASK_ROOT") != "" {
-		grpc.EnableTracing = true
-
-		log.Printf("Attempting to register Google profiler")
-		pathToCreds := filepath.Join(os.Getenv("LAMBDA_TASK_ROOT"), gcloudPrivateKeyFilename)
-		setEnvErr := os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", pathToCreds)
-		if setEnvErr != nil {
-			fmt.Printf("Failed to set JSON path: " + setEnvErr.Error())
+	// https://docs.aws.amazon.com/lambda/latest/dg/current-supported-versions.html
+	// Setup a ssmClient with a 5 min expiry
+	stringVal, stringErr := cacheClient.GetSecureString("GoogleCloudPProfEncryptedCredentials")
+	if stringErr != nil {
+		logger.Error("Failed to access Google credentials data. Error: ", stringErr)
+		return
+	} else {
+		// Great, let's go ahead and write it out...
+		googleCredsPath := filepath.Join("/tmp", "googleCredsPProf.json")
+		errWrite := ioutil.WriteFile(googleCredsPath, []byte(stringVal), os.ModePerm)
+		if errWrite != nil {
+			logger.Error("Failed to save Google credentials file. Error: ", errWrite)
+			return
 		} else {
-			log.Printf("Set credentials path to: " + pathToCreds)
-			profileErr := profiler.Start(profiler.Config{
-				Service:        "awslambda-pprof",
-				ServiceVersion: sparta.StampedBuildID,
-				ProjectID:      "spartapprof",
-				DebugLogging:   true,
-			})
-			if profileErr != nil {
-				log.Fatalf("Cannot start the profiler: %v", profileErr)
+			// Sweet, set the env var and move on...
+			logger.Info("Saved Google creds to path: ", googleCredsPath)
+			setEnvErr := os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", googleCredsPath)
+			if setEnvErr != nil {
+				logger.Error("Failed to set JSON path. Error: ", setEnvErr)
 			} else {
-				log.Printf("Registered Google Profiler")
+				logger.Info("Set credentials path to: ", googleCredsPath)
+				// So the service name has to match this regexp:
+				// ^[a-z]([-a-z0-9_.]{0,253}[a-z0-9])?$
+				// Per: https://cloud.google.com/profiler/docs/profiling-go
+				stackDriverName := strings.ToLower(os.Getenv("AWS_LAMBDA_FUNCTION_NAME"))
+				profileErr := profiler.Start(profiler.Config{
+					Service:        stackDriverName,
+					ServiceVersion: sparta.StampedBuildID,
+					ProjectID:      "spartapprof",
+					DebugLogging:   true,
+				})
+				if profileErr != nil {
+					logger.Error("Failed to start the Google profiler: ", profileErr)
+				} else {
+					logger.Info("Registered Google Profiler")
+				}
 			}
 		}
-	}
-}
-
-// WorkflowHooks returns the workflow hooks to setup profiling
-func WorkflowHooks() *sparta.WorkflowHooks {
-	// ArchiveHook is responsible for injecting the Google
-	// JSON file into the archive
-	// TODO: Migrate this to an SSM store
-	archiveHook := func(context map[string]interface{},
-		serviceName string,
-		zipWriter *zip.Writer,
-		awsSession *session.Session,
-		noop bool,
-		logger *logrus.Logger) error {
-
-		logger.Info("Adding Google Stackdriver credentials")
-		binaryWriter, binaryWriterErr := zipWriter.Create(gcloudPrivateKeyFilename)
-		if nil != binaryWriterErr {
-			return binaryWriterErr
-		}
-		jsonPath := os.Getenv("GCLOUD_KEYS_PATH")
-		if jsonPath == "" {
-			return errors.Errorf("Please provide env.GCLOUD_KEYS_PATH that points to your JSON file")
-		}
-		content, contentErr := ioutil.ReadFile(jsonPath)
-		if contentErr != nil {
-			return contentErr
-		}
-		_, copyErr := io.Copy(binaryWriter, bytes.NewReader(content))
-		return copyErr
-	}
-	return &sparta.WorkflowHooks{
-		Archives: []sparta.ArchiveHookHandler{sparta.ArchiveHookFunc(archiveHook)},
 	}
 }
