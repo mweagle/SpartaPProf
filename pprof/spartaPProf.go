@@ -10,9 +10,16 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+
+// LogRelayFunction is the mock relay function that ships
+// logs to an external service. In the default case it's a nop.
+func LogRelayFunction(ctx context.Context) error
+	return nil
+}
+
 // InitializeProfiler registers the profiler
-func InitializeProfiler(cacheClient ssmcache.Client, logger *logrus.Logger) {
-	logger.Info("Attempting to register Sparta profiler")
+func InitializeProfiler() {
+	log.Info("Attempting to register Sparta profiler")
 
 	// Install the profiling hook. During `provision`, this will annotate
 	// each lambda function with enough context to publish profile snapshots

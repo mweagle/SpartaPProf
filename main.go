@@ -3,94 +3,34 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"os"
-	"runtime"
 	"sync"
-	"time"
 
 	sparta "github.com/mweagle/Sparta"
 	spartaCF "github.com/mweagle/Sparta/aws/cloudformation"
 	iamBuilder "github.com/mweagle/Sparta/aws/iam/builder"
+	spartaDecorators "github.com/mweagle/Sparta/decorator"
+	"github.com/mweagle/SpartaPProf/pprof"
 	pprofImpl "github.com/mweagle/SpartaPProf/pprof"
 	gocf "github.com/mweagle/go-cloudformation"
-	"github.com/mweagle/ssm-cache"
 	"github.com/sirupsen/logrus"
 )
 
-var cacheClient ssmcache.Client
+var once sync.Once
 
-func init() {
-	cacheClient = ssmcache.NewClient(5 * time.Minute)
-}
-
-//----------------------------------------------------------------------------//
-// Throwaway functions to generate load
+////////////////////////////////////////////////////////////////////////////////
+// _   _ _____ ___ _    ___
+// | | | |_   _|_ _| |  / __|
+// | |_| | | |  | || |__\__ \
+//  \___/  |_| |___|____|___/
 //
+////////////////////////////////////////////////////////////////////////////////
 
-func emptySelect() {
-	n := runtime.NumCPU()
-	runtime.GOMAXPROCS(n)
+func spartaLambdaMaker(functionName string,
+	handler interface{}) *sparta.LambdaAWSInfo {
 
-	quit := make(chan bool)
-
-	for i := 0; i < n; i++ {
-		go func() {
-			for {
-				select {
-				case <-quit:
-					return
-				default:
-				}
-			}
-		}()
-	}
-	time.Sleep(20 * time.Second)
-	for i := 0; i < n; i++ {
-		quit <- true
-	}
-}
-
-// Adapted from https://jvns.ca/blog/2017/09/24/profiling-go-with-pprof/
-func leakyFunction() {
-	s := make([]string, 3)
-	for i := 0; i < 128; i++ {
-		s = append(s, "magical pandas")
-		if (i % 32) == 0 {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-}
-
-func artificialLoad() {
-	var once sync.Once
-	once.Do(func() {
-		go emptySelect()
-	})
-	go leakyFunction()
-	load()
-}
-
-func load() {
-	for i := 0; i < (1 << 7); i++ {
-		rand.Int63()
-	}
-}
-
-//----------------------------------------------------------------------------//
-
-// Standard Sparta lambda function
-func helloWorld(ctx context.Context) (string, error) {
-	artificialLoad()
-	expString, _ := cacheClient.GetExpiringString("RotatingString", 30*time.Second)
-	return fmt.Sprintf("Hi there: %s 🌍", expString), nil
-}
-
-//----------------------------------------------------------------------------//
-
-func main() {
-	lambdaFn := sparta.HandleAWSLambda("Hello World",
-		helloWorld,
+	lambdaFn := sparta.HandleAWSLambda(functionName,
+		handler,
 		sparta.IAMRoleDefinition{})
 	lambdaFn.Options.Timeout = 60
 	lambdaFn.Options.MemorySize = 256
@@ -107,53 +47,99 @@ func main() {
 
 	// Need to debug the gRPC connection? Set an env var
 	// according to https://golang.org/pkg/net/http/
-	// lambdaFn.Options.Environment = map[string]*gocf.StringExpr{
-	// 	"GODEBUG": gocf.String("http2debug=2"),
-	// }
-
-	arnDecorator := func(serviceName string,
-		lambdaResourceName string,
-		lambdaResource gocf.LambdaFunction,
-		resourceMetadata map[string]interface{},
-		S3Bucket string,
-		S3Key string,
-		buildID string,
-		template *gocf.Template,
-		context map[string]interface{},
-		logger *logrus.Logger) error {
-
-		// Add the function ARN as a stack output
-		template.Outputs["FunctionARN"] = &gocf.Output{
-			Description: "Lambda function ARN",
-			Value:       gocf.GetAtt(lambdaResourceName, "Arn"),
-		}
-		return nil
+	lambdaFn.Options.Environment = map[string]*gocf.StringExpr{
+		"GODEBUG": gocf.String("http2debug=0"),
 	}
 
 	lambdaFn.Decorators = append(lambdaFn.Decorators,
-		sparta.TemplateDecoratorHookFunc(arnDecorator))
+		spartaDecorators.PublishAttOutputDecorator(fmt.Sprintf("%s FunctionARN", functionName),
+			fmt.Sprintf("%s Lambda ARN", functionName), "Arn"))
 
-	// Sanitize the name so that it doesn't have any spaces
-	//stackName := spartaCF.UserScopedStackName("SpartaHello")
-	var lambdaFunctions []*sparta.LambdaAWSInfo
-	lambdaFunctions = append(lambdaFunctions, lambdaFn)
-	pprofStackName := spartaCF.UserScopedStackName("SpartaPProf")
+	return lambdaFn
+}
 
-	// Initialize the profiler
+////////////////////////////////////////////////////////////////////////////////
+//  _      _   __  __ ___ ___   _
+// | |    /_\ |  \/  | _ )   \ /_\
+// | |__ / _ \| |\/| | _ \ |) / _ \
+// |____/_/ \_\_|  |_|___/___/_/ \_\
+///
+////////////////////////////////////////////////////////////////////////////////
+
+// Standard Sparta lambda function
+func helloWorld(ctx context.Context) (string, error) {
 	if sparta.IsExecutingInLambda() {
-		initLogger, initLoggerErr := sparta.NewLogger("info")
-		if initLoggerErr != nil {
-			panic("Failed to initialize logger: " + initLoggerErr.Error())
-		}
-		pprofImpl.InitializeProfiler(cacheClient, initLogger)
+		once.Do(pprofImpl.InitializeProfiler)
 	}
 
-	// Startup
-	err := sparta.Main(pprofStackName,
+	//load.GenerateArtificialLoad()
+	logger, _ := ctx.Value(sparta.ContextKeyLogger).(*logrus.Logger)
+	logger.Info("Hello from AWS Lambda 👋")
+	return fmt.Sprintf("Hi there: %s 🌍", "World"), nil
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//  __  __   _   ___ _  _
+// |  \/  | /_\ |_ _| \| |
+// | |\/| |/ _ \ | || .` |
+// |_|  |_/_/ \_\___|_|\_|
+//
+////////////////////////////////////////////////////////////////////////////////
+func main() {
+	workflowHooks := &sparta.WorkflowHooks{}
+
+	helloWorldLambda := spartaLambdaMaker("Hello World", helloWorld)
+	loggingRelay := spartaLambdaMaker("KinesisLogConsumer", pprof.LogRelayFunction)
+
+	// Create the Kinesis Log Aggregator resources
+	kinesisResource := &gocf.KinesisStream{
+		ShardCount: gocf.Integer(1),
+	}
+	kinesisMapping := &sparta.EventSourceMapping{
+		StartingPosition: "TRIM_HORIZON",
+		BatchSize:        10,
+	}
+	// Create the decorator
+	decorator := spartaDecorators.NewLogAggregatorDecorator(kinesisResource,
+		kinesisMapping,
+		loggingRelay)
+
+	// Make sure the LoggingRelay has privileges to read from Kinesis
+	for _, eachStatement := range sparta.CommonIAMStatements.Kinesis {
+		loggingRelay.RoleDefinition.Privileges = append(loggingRelay.RoleDefinition.Privileges, sparta.IAMRolePrivilege{
+			Actions:  eachStatement.Action,
+			Resource: gocf.GetAtt(decorator.KinesisLogicalResourceName(), "Arn"),
+		})
+	}
+
+	// Two parts...
+	lambdaFunctions := []*sparta.LambdaAWSInfo{helloWorldLambda, loggingRelay}
+
+	// 1. Include the decorator for each lambda function. This
+	// includes the function that relays events off of the Kinesis
+	// stream. The reason for this is that the relay function needs a
+	// EventSourceMapping attached to it.
+	for _, eachLambda := range lambdaFunctions {
+		if eachLambda.Decorators == nil {
+			eachLambda.Decorators = make([]sparta.TemplateDecoratorHandler, 0)
+		}
+		eachLambda.Decorators = append(eachLambda.Decorators, decorator)
+	}
+
+	// 2. Add the decorator to the Service so that the single Kinesis
+	// stream can be attached
+	workflowHooks.ServiceDecorators = []sparta.ServiceDecoratorHookHandler{decorator}
+
+	// Create the stack
+	pprofStackName := spartaCF.UserScopedStackName("SpartaPProf")
+
+	err := sparta.MainEx(pprofStackName,
 		"Sparta application that demonstrates how to profile in AWS Lambda",
 		lambdaFunctions,
 		nil,
-		nil)
+		nil,
+		workflowHooks,
+		false)
 	if err != nil {
 		os.Exit(1)
 	}
