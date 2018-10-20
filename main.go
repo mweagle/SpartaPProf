@@ -10,6 +10,7 @@ import (
 	spartaCF "github.com/mweagle/Sparta/aws/cloudformation"
 	iamBuilder "github.com/mweagle/Sparta/aws/iam/builder"
 	spartaDecorators "github.com/mweagle/Sparta/decorator"
+	"github.com/mweagle/SpartaPProf/load"
 	"github.com/mweagle/SpartaPProf/pprof"
 	pprofImpl "github.com/mweagle/SpartaPProf/pprof"
 	gocf "github.com/mweagle/go-cloudformation"
@@ -72,7 +73,7 @@ func helloWorld(ctx context.Context) (string, error) {
 		once.Do(pprofImpl.InitializeProfiler)
 	}
 
-	//load.GenerateArtificialLoad()
+	load.GenerateArtificialLoad()
 	logger, _ := ctx.Value(sparta.ContextKeyLogger).(*logrus.Logger)
 	logger.Info("Hello from AWS Lambda 👋")
 	return fmt.Sprintf("Hi there: %s 🌍", "World"), nil
